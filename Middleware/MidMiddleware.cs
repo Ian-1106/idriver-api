@@ -46,12 +46,12 @@ namespace I3S_API.Middleware
             string Refresh_str = "RefreshToken";
 
             //若IIS與開發站在同一台電腦，名稱加上port，避免Cookie衝突
-            // if (env.IsDevelopment())
-            // {
-            //     string remoteIpAddress = httpContext.Connection.LocalPort.ToString();
-            //     Access_str += remoteIpAddress;
-            //     Refresh_str += remoteIpAddress;
-            // }
+            if (env.IsDevelopment())
+            {
+                string remoteIpAddress = httpContext.Connection.LocalPort.ToString();
+                Access_str += remoteIpAddress;
+                Refresh_str += remoteIpAddress;
+            }
 
             string t_accesstoken = httpContext.Request.Cookies[Access_str];
             string t_refreshtoken = httpContext.Request.Cookies[Refresh_str];
