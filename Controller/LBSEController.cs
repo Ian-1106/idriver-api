@@ -1,12 +1,13 @@
-﻿using Dapper;
+﻿using Azure;
+using Dapper;
 using I3S_API.Helpers;
 using I3S_API.Lib;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Data.SqlClient;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace I3S_API.Controllers
@@ -26,78 +27,33 @@ namespace I3S_API.Controllers
         [HttpGet("nearpoi")]
         public async Task<IActionResult> GetNearPOIAsync(double lat, double lon, int range, string scopes)
         {
-            /*
-             * 23.97120
-             * 120.947916
-             * 3
-             * 測速照相
-             */
+            var scopesArray = scopes.Split(',');
+            var weatherResult = (await GetWeatherData(lat, lon)) ?? new WeatherResponse();
+            var poisResult = await GetPOIData(lat, lon, range, scopesArray);
 
-            string[] scopesArray = scopes.Split(',');
-
-            try
+            var cell = new CombinedResponse
             {
-                string TargetUrl = $"{BaseURL}/usage?lat={lat}&lon={lon}&range={range}&key=FB378D11-FA61-4DBC-8EAB-C3F22C9053CA";
-                var LBSEResult = await ApiHelper.GetApiResponse(TargetUrl);
+                Weather = weatherResult,
+                POIs = poisResult
+            };
 
-                if (LBSEResult is ObjectResult okResult && okResult.Value != null)
-                {
-                    var valueResult = okResult.Value.ToString();
-
-                    JObject jsonResult = JObject.Parse(valueResult);
-                    JArray dataArray = (JArray)jsonResult["data"];
-                    var result = new List<dynamic>();
-
-                    foreach (var item in dataArray)
-                    {
-                        var ID = (int)item["ID"];
-                        var Lat = (double)item["Lat"];
-                        var Lon = (double)item["Lon"];
-                        var OCName = (string)item["OCName"];
-                        var jData = JObject.Parse((string)item["jData"]);
-
-                        foreach (var ss in scopesArray)
-                        {
-                            if (ss.Equals(OCName))
-                            {
-                                string strsql = "select * from Object where OID = @ID";
-                                using (var db = new AppDb())
-                                {
-                                    var data = db.Connection.QueryFirstOrDefault(strsql, new { ID });
-                                    if (data != null)
-                                    {
-                                        result.Add(data);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    return Ok(result);
-                }
-
-                return NotFound();
-            }
-            catch (Exception ex)
+            var jsonResponse = JsonConvert.SerializeObject(cell);
+            return new ContentResult
             {
-                _logger.LogError(ex, "An error occurred while processing the request.");
-                return StatusCode(500, new { error = "An error occurred while processing the request.", details = ex.Message });
-            }
+                Content = jsonResponse,
+                ContentType = "application/json",
+                StatusCode = 200
+            };
         }
 
-        [HttpGet("weather")]
-        public async Task<IActionResult> GetWeatherAsync(double lat, double lon)
+        private async Task<WeatherResponse> GetWeatherData(double lat, double lon)
         {
-            /*
-             * 23.97120
-             * 120.947916
-             */
             try
             {
-                string TargetUrl = $"{BaseURL}/public?lat={lat}&lon={lon}&key=FB378D11-FA61-4DBC-8EAB-C3F22C9053CA";
-                var LBSEResult = await ApiHelper.GetApiResponse(TargetUrl);
+                string targetUrl = $"{BaseURL}/public?lat={lat}&lon={lon}&key=FB378D11-FA61-4DBC-8EAB-C3F22C9053CA";
+                var lbsResult = await ApiHelper.GetApiResponse(targetUrl);
 
-                if (LBSEResult is ObjectResult okResult && okResult.Value != null)
+                if (lbsResult is ObjectResult okResult && okResult.Value != null)
                 {
                     var valueResult = okResult.Value.ToString();
                     JObject jsonResult = JObject.Parse(valueResult);
@@ -111,10 +67,10 @@ namespace I3S_API.Controllers
                             var city = pathParts[2];
                             var town = pathParts[3];
 
-                            string WeatherUrl = $"https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001?Authorization=CWA-E5231FF2-8050-47A1-9733-C2BE8E0FD1E0";
-                            var weatherResult = await ApiHelper.GetApiResponse(WeatherUrl);
+                            string weatherUrl = $"https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001?Authorization=CWA-E5231FF2-8050-47A1-9733-C2BE8E0FD1E0";
+                            var result = await ApiHelper.GetApiResponse(weatherUrl);
 
-                            if (weatherResult is ObjectResult okResult2 && okResult2.Value != null)
+                            if (result is ObjectResult okResult2 && okResult2.Value != null)
                             {
                                 var valueResult2 = okResult2.Value.ToString();
                                 JObject jsonResult2 = JObject.Parse(valueResult2);
@@ -122,28 +78,75 @@ namespace I3S_API.Controllers
 
                                 foreach (var station in stations)
                                 {
-                                    string countryName = station["GeoInfo"]?["CountyName"]?.ToString();
-                                    string townName = station["GeoInfo"]?["TownName"]?.ToString();
+                                    var countryName = station["GeoInfo"]?["CountyName"]?.ToString();
+                                    var townName = station["GeoInfo"]?["TownName"]?.ToString();
 
-                                    if (city.Equals(countryName) && town.Equals(townName))
+                                    if (city.Equals(countryName, StringComparison.OrdinalIgnoreCase) &&
+                                        town.Equals(townName, StringComparison.OrdinalIgnoreCase))
                                     {
                                         var stationJson = JObject.FromObject(station);
-                                        _logger.LogInformation("Returning JSON response: {0}", stationJson.ToString());
-
-                                        var responseJson = JsonConvert.SerializeObject(new { city, town, stationJson });
-                                        return Content(responseJson, "application/json");
+                                        return new WeatherResponse
+                                        {
+                                            City = city,
+                                            Town = town,
+                                            StationJson = stationJson
+                                        };
                                     }
                                 }
                             }
                         }
                     }
                 }
-                return NotFound();
+                return new WeatherResponse();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An error occurred while processing the request.");
-                return StatusCode(500, new { error = "An error occurred while processing the request.", details = ex.Message });
+                _logger.LogError(ex, "An error occurred while processing the weather request.");
+                throw;
+            }
+        }
+
+        private async Task<List<POI>> GetPOIData(double lat, double lon, int range, string[] scopesArray)
+        {
+            try
+            {
+                string targetUrl = $"{BaseURL}/usage?lat={lat}&lon={lon}&range={range}&key=FB378D11-FA61-4DBC-8EAB-C3F22C9053CA";
+                var lbsResult = await ApiHelper.GetApiResponse(targetUrl);
+
+                if (lbsResult is ObjectResult okResult && okResult.Value != null)
+                {
+                    var valueResult = okResult.Value.ToString();
+                    JObject jsonResult = JObject.Parse(valueResult);
+                    JArray dataArray = (JArray)jsonResult["data"];
+                    var result = new List<POI>();
+
+                    foreach (var item in dataArray)
+                    {
+                        var id = (int)item["ID"];
+                        var ocName = (string)item["OCName"];
+
+                        if (scopesArray.Contains(ocName, StringComparer.OrdinalIgnoreCase))
+                        {
+                            string strSql = "SELECT * FROM Object WHERE OID = @ID";
+                            using (var db = new AppDb())
+                            {
+                                var data = db.Connection.QueryFirstOrDefault<POI>(strSql, new { ID = id });
+                                if (data != null)
+                                {
+                                    result.Add(data);
+                                }
+                            }
+                        }
+                    }
+
+                    return result;
+                }
+                return new List<POI>();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred while processing the POI request.");
+                throw;
             }
         }
     }
